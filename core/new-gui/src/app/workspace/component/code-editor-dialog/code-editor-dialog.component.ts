@@ -4,11 +4,15 @@ import { UntilDestroy, untilDestroyed } from "@ngneat/until-destroy";
 import { WorkflowActionService } from "../../service/workflow-graph/model/workflow-action.service";
 import { YText } from "yjs/dist/src/types/YText";
 import { MonacoBinding } from "y-monaco";
+import { MonacoLanguageClient, CloseAction, ErrorAction, MessageTransports, MonacoServices } from 'monaco-languageclient';
+import { toSocket, WebSocketMessageReader, WebSocketMessageWriter } from 'vscode-ws-jsonrpc';
 import { CoeditorPresenceService } from "../../service/workflow-graph/model/coeditor-presence.service";
 import { DomSanitizer, SafeStyle } from "@angular/platform-browser";
 import { Coeditor } from "../../../common/type/user";
 import { YType } from "../../types/shared-editing.interface";
 import { FormControl } from "@angular/forms";
+import normalizeUrl from 'normalize-url';
+// import * as monaco from "monaco-editor";
 
 declare const monaco: any;
 
@@ -30,8 +34,10 @@ declare const monaco: any;
   templateUrl: "./code-editor-dialog.component.html",
   styleUrls: ["./code-editor-dialog.component.scss"],
 })
+
 export class CodeEditorDialogComponent implements AfterViewInit, SafeStyle, OnDestroy {
   editorOptions = {
+    model: monaco.editor.createModel(this.code, 'python', monaco.Uri.parse('inmemory://model.py')),
     theme: "vs-dark",
     language: "python",
     fontSize: "11",
@@ -58,7 +64,34 @@ export class CodeEditorDialogComponent implements AfterViewInit, SafeStyle, OnDe
     this.workflowActionService.getTexeraGraph().updateSharedModelAwareness("editingCode", false);
   }
 
+  createLanguageClient(transports: MessageTransports): MonacoLanguageClient {
+    return new MonacoLanguageClient({
+        name: 'Sample Language Client',
+        clientOptions: {
+            // use a language id as a document selector
+            documentSelector: ['python'],
+            // disable the default error handler
+            errorHandler: {
+                error: () => ({ action: ErrorAction.Continue }),
+                closed: () => ({ action: CloseAction.DoNotRestart })
+            }
+        },
+        // create a language client connection from the JSON RPC connection on demand
+        connectionProvider: {
+            get: () => {
+                return Promise.resolve(transports);
+            }
+        }
+    });
+}
+
+createUrl(hostname: string, port: number, path: string): string {
+  const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+  return normalizeUrl(`${protocol}://${hostname}:${port}${path}`);
+}
+
   ngAfterViewInit() {
+      
     const currentOperatorId: string = this.workflowActionService
       .getJointGraphWrapper()
       .getCurrentHighlightedOperatorIDs()[0];
@@ -76,7 +109,29 @@ export class CodeEditorDialogComponent implements AfterViewInit, SafeStyle, OnDe
         .get("operatorProperties") as YType<Readonly<{ [key: string]: any }>>
     ).get("code") as YText;
 
+
     this.initMonaco();
+
+    MonacoServices.install({
+      rootPath: 'inmemory://',
+      workspaceFolders: [{ uri: monaco.Uri.parse('inmemory://model.py'), name: 'model.py', index: 0 }]
+  });
+
+      // create the web socket
+      const url = this.createUrl('localhost', 3000, '/sampleServer');
+      const webSocket = new WebSocket(url);
+
+      webSocket.onopen = () => {
+          const socket = toSocket(webSocket);
+          const reader = new WebSocketMessageReader(socket);
+          const writer = new WebSocketMessageWriter(socket);
+          const languageClient = this.createLanguageClient({
+              reader,
+              writer
+          });
+          languageClient.start();
+          reader.onClose(() => languageClient.stop());
+      };
     this.handleDisabledStatusChange();
   }
 
